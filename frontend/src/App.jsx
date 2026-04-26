@@ -12,6 +12,55 @@ const toSafeString = (value) => {
   }
 };
 
+const renderAssistantContent = (value) => {
+  const text = toSafeString(value);
+  const lines = text.split("\n");
+
+  return (
+    <div className="assistant-content">
+      {lines.map((rawLine, idx) => {
+        const line = rawLine.trim();
+        if (!line) {
+          return <div key={`line-${idx}`} className="assistant-line spacer" />;
+        }
+
+        if (line === "•") {
+          return <div key={`line-${idx}`} className="assistant-line spacer" />;
+        }
+
+        if (/^#{1,6}\s+/.test(line)) {
+          const title = line.replace(/^#{1,6}\s+/, "");
+          return (
+            <div key={`line-${idx}`} className="assistant-line heading">
+              {title}
+            </div>
+          );
+        }
+
+        if (/^[-*]\s+/.test(line) || /^[0-9]+\.\s+/.test(line) || /^•\s+/.test(line)) {
+          const bulletText = line
+            .replace(/^[-*]\s+/, "")
+            .replace(/^[0-9]+\.\s+/, "")
+            .replace(/^•\s+/, "");
+          return (
+            <div key={`line-${idx}`} className="assistant-line bullet">
+              <span className="bullet-dot">•</span>
+              <span>{bulletText.replace(/\*\*(.*?)\*\*/g, "$1")}</span>
+            </div>
+          );
+        }
+
+        const clean = line.replace(/\*\*(.*?)\*\*/g, "$1");
+        return (
+          <div key={`line-${idx}`} className="assistant-line paragraph">
+            {clean}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
 function App() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
@@ -133,7 +182,9 @@ function App() {
                       {message?.role === "assistant" ? "Assistant" : "You"}
                     </div>
                     <div className="bubble-content">
-                      {toSafeString(message?.content)}
+                      {message?.role === "assistant"
+                        ? renderAssistantContent(message?.content)
+                        : toSafeString(message?.content)}
                     </div>
                   </div>
                 </article>

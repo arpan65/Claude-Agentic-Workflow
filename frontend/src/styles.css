@@ -168,53 +168,46 @@ body {
 .bubble-content {
   line-height: 1.5;
   color: #e8edf8;
+  white-space: normal;
 }
 
-.bubble-content > *:first-child {
-  margin-top: 0;
+.assistant-content {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
-.bubble-content > *:last-child {
-  margin-bottom: 0;
+.assistant-line {
+  color: #dce4f3;
 }
 
-.bubble-content h2,
-.bubble-content h3,
-.bubble-content h4 {
-  margin: 0.3rem 0 0.65rem;
-  line-height: 1.35;
-}
-
-.bubble-content p {
-  margin: 0.45rem 0;
-}
-
-.bubble-content ul,
-.bubble-content ol {
-  margin: 0.5rem 0 0.7rem;
-  padding-left: 1.25rem;
-}
-
-.bubble-content li {
-  margin: 0.25rem 0;
-}
-
-.bubble-content strong {
+.assistant-line.heading {
   color: #ffffff;
+  font-weight: 650;
+  font-size: 1.02rem;
+  margin-top: 2px;
 }
 
-.bubble-content code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  font-size: 0.9em;
-  background: rgba(96, 142, 255, 0.16);
-  border: 1px solid rgba(96, 142, 255, 0.28);
-  border-radius: 6px;
-  padding: 0.1em 0.35em;
+.assistant-line.paragraph {
+  line-height: 1.55;
 }
 
-.bubble-content a {
-  color: #9fc0ff;
-  text-decoration: underline;
+.assistant-line.bullet {
+  display: grid;
+  grid-template-columns: 16px 1fr;
+  align-items: start;
+  gap: 8px;
+  line-height: 1.55;
+}
+
+.bullet-dot {
+  color: #8fb1ff;
+  font-size: 0.9rem;
+  margin-top: 2px;
+}
+
+.assistant-line.spacer {
+  height: 4px;
 }
 
 .thinking-bubble {
