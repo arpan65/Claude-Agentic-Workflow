@@ -1,6 +1,19 @@
 import React, { useEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import TripResult from "./TripResult";
+
+class ResultBoundary extends React.Component {
+  state = { err: null };
+  static getDerivedStateFromError(e) { return { err: e }; }
+  render() {
+    if (this.state.err) return (
+      <div className="error-banner">
+        <span>⚠️</span>
+        <span>Render error: {this.state.err.message}</span>
+      </div>
+    );
+    return this.props.children;
+  }
+}
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
 
@@ -294,24 +307,13 @@ export default function App() {
       {/* ── RESULTS ── */}
       {result && (
         <section className="results-section" ref={resultsRef}>
-          <div className="results-card">
-            <div className="results-meta">
-              <span className="results-route">{form.from} → {form.to}</span>
-              <span className="results-badge">{form.pax} traveller{form.pax !== 1 ? "s" : ""}</span>
-            </div>
-            <div className="results-body">
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                components={{
-                  a: ({ node, ...props }) => (
-                    <a {...props} target="_blank" rel="noopener noreferrer" />
-                  ),
-                }}
-              >
-                {result}
-              </ReactMarkdown>
-            </div>
+          <div className="results-meta">
+            <span className="results-route">{form.from} → {form.to}</span>
+            <span className="results-badge">{form.pax} traveller{form.pax !== 1 ? "s" : ""}</span>
           </div>
+          <ResultBoundary>
+            <TripResult markdown={result} />
+          </ResultBoundary>
         </section>
       )}
 

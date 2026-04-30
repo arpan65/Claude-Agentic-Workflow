@@ -1,8 +1,10 @@
 import asyncio
 import json
 import os
+import time
 import uuid
-from dataclasses import dataclass
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -14,9 +16,16 @@ from app.agent.mcp_agent import MCPAgent
 
 load_dotenv()
 
+_api_key = os.getenv("ANTHROPIC_API_KEY")
+if not _api_key:
+    raise ValueError("Missing ANTHROPIC_API_KEY in environment")
+
+MAX_SESSIONS = 10        # max concurrent searches (each spawns a browser process)
+SESSION_TTL  = 7_200    # seconds — evict idle sessions after 2 hours
+
 
 class ChatRequest(BaseModel):
-    message: str = Field(..., min_length=1)
+    message: str = Field(..., min_length=1, max_length=500)
     session_id: str | None = None
 
 
@@ -32,9 +41,48 @@ class ResetRequest(BaseModel):
 @dataclass
 class AgentState:
     agent: MCPAgent
+    last_used: float = field(default_factory=time.time)
 
 
-app = FastAPI(title="Claude MCP Backend", version="1.0.0")
+_agents: dict[str, AgentState] = {}
+
+
+def _evict_stale() -> None:
+    cutoff = time.time() - SESSION_TTL
+    stale = [sid for sid, s in _agents.items() if s.last_used < cutoff]
+    for sid in stale:
+        state = _agents.pop(sid)
+        asyncio.create_task(state.agent.disconnect())
+
+
+def _get_or_create_state(session_id: str | None) -> tuple[str, AgentState]:
+    _evict_stale()
+
+    if session_id and session_id in _agents:
+        _agents[session_id].last_used = time.time()
+        return session_id, _agents[session_id]
+
+    if len(_agents) >= MAX_SESSIONS:
+        raise HTTPException(
+            status_code=503,
+            detail="Server busy — max concurrent searches reached. Try again shortly.",
+        )
+
+    new_session_id = session_id or str(uuid.uuid4())
+    state = AgentState(agent=MCPAgent(api_key=_api_key))
+    _agents[new_session_id] = state
+    return new_session_id, state
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    yield
+    for state in list(_agents.values()):
+        await state.agent.disconnect()
+    _agents.clear()
+
+
+app = FastAPI(title="Claude MCP Backend", version="1.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -42,21 +90,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-_agents: dict[str, AgentState] = {}
-_api_key = os.getenv("ANTHROPIC_API_KEY")
-if not _api_key:
-    raise ValueError("Missing ANTHROPIC_API_KEY in environment")
-
-
-def _get_or_create_state(session_id: str | None) -> tuple[str, AgentState]:
-    if session_id and session_id in _agents:
-        return session_id, _agents[session_id]
-
-    new_session_id = session_id or str(uuid.uuid4())
-    state = AgentState(agent=MCPAgent(api_key=_api_key))
-    _agents[new_session_id] = state
-    return new_session_id, state
 
 
 @app.get("/health")
@@ -127,8 +160,3 @@ async def reset(payload: ResetRequest) -> dict[str, str]:
     return {"status": "cleared"}
 
 
-@app.on_event("shutdown")
-async def shutdown_event() -> None:
-    for state in _agents.values():
-        await state.agent.disconnect()
-    _agents.clear()

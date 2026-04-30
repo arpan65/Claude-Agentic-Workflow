@@ -22,7 +22,7 @@ Cost optimisations applied
      repeated system-prompt tokens after the first turn.
   2. Researcher + Pricer merged into a single "scout" agent — halves Playwright overhead
      and eliminates one full Sonnet multi-turn session.
-  3. max_turns reduced: scout 10 (was 20+20=40), aggregator 3 (was 4).
+  3. max_turns per role: planner 2, scout 20, budget 12, aggregator 3.
   4. Tool result cap: 8 000 chars (was 12 000).
   5. Context passed to budget/aggregator truncated to 2 000 chars (was 3 000/4 000).
   6. Aggregator downgraded to Haiku — it only formats structured markdown, no tool use.
@@ -46,7 +46,7 @@ from contextlib import AsyncExitStack
 from datetime import datetime
 from typing import Callable, Optional
 
-from anthropic import Anthropic
+from anthropic import AsyncAnthropic
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -115,9 +115,9 @@ def build_server_configs(pw_browsers_path: Optional[str]) -> dict:
 
     configs = {
         "browser": StdioServerParameters(
-        command="npx",
-        args=["-y", "@playwright/mcp@latest"],
-        env={**os.environ, "PLAYWRIGHT_HEADLESS": "true"}
+            command="npx",
+            args=["-y", "@playwright/mcp@latest"],
+            env={**env, "PLAYWRIGHT_HEADLESS": "true"},
         ),
         "financial_quant": StdioServerParameters(
             command="uvx",
@@ -221,18 +221,19 @@ Output ONLY the JSON object.
 # ── SCOUT (merged researcher + pricer) ──────────────────────────────
 "scout": """You are the SCOUT agent — Travel Data Extractor.
 
-You have Playwright browser tools. Do ONE efficient pass: navigate each URL, extract all
-prices and availability in a single snapshot per site.
+You have Playwright browser tools. Work through the URL list CATEGORY BY CATEGORY.
+Stop a category as soon as ONE site in it yields usable prices — do NOT visit remaining URLs for that category.
 
 Tools (use in order per URL):
-  browser_navigate → browser_snapshot → interact only if no results visible → snapshot again
+  browser_navigate → browser_snapshot → interact only if no results visible (one more snapshot) → STOP this category if prices found
 
 For EACH URL:
 1. browser_navigate to the URL
 2. browser_snapshot — read results immediately
 3. Only if a search form is shown with no results: fill dates/locations with browser_type,
    browser_click to submit, then one more browser_snapshot
-4. Extract everything visible; move on — do NOT retry more than once per URL
+4. If prices are visible → record them and move to the next CATEGORY (skip remaining URLs in current category)
+5. If blocked/CAPTCHA/empty → note it and try next URL in same category
 
 What to record:
 - Transport: operator, depart time, arrive time, duration, price/person (lowest + mid + high)
@@ -240,7 +241,7 @@ What to record:
 - Activities: name, price
 - Any CAPTCHA / block: note and skip
 
-Stop immediately once you have at least 2 transport prices AND 2 hotel prices.
+Stop entirely once you have transport prices AND hotel prices (one source each is enough).
 
 Output compact Markdown:
 
@@ -480,7 +481,7 @@ class PlaywrightFallback:
 class MCPAgent:
     def __init__(self, anthropic_api_key: str = None, api_key: str = None):
         key = anthropic_api_key or api_key
-        self.client = Anthropic(api_key=key)
+        self.client = AsyncAnthropic(api_key=key)
         self.stack: Optional[AsyncExitStack] = None
         self.sessions: list = []
         self.session_map: dict = {}
@@ -571,7 +572,12 @@ class MCPAgent:
                 c.text for c in content if hasattr(c, "text")
             ).strip()
 
-            if not text or len(text) < 20:
+            # Calculator tools return short numbers (e.g. "110") — don't flag as thin
+            is_calculator = tool_def.get("server_name") == "financial_quant"
+            if not text:
+                logger.warning(f"[{agent_role}] ⚠️  Empty result from {tool_call.name}")
+                return "EMPTY_RESULT: 0 chars returned."
+            if not is_calculator and len(text) < 20:
                 logger.warning(
                     f"[{agent_role}] ⚠️  Thin result ({len(text)} chars) "
                     f"from {tool_call.name}"
@@ -634,7 +640,7 @@ class MCPAgent:
             if claude_tools:
                 kwargs["tools"] = claude_tools
 
-            response = self.client.messages.create(**kwargs)
+            response = await self.client.messages.create(**kwargs)
 
             # Log cache usage when available (helps validate caching is working)
             usage = getattr(response, "usage", None)
@@ -790,22 +796,25 @@ class MCPAgent:
         await _progress("🔍 Scouting prices and travel options...")
 
         if self._mcp_browser_connected:
+            # Limit to 2 per category — first success stops the category
+            t_urls = transport_urls[:2]
+            h_urls = hotel_urls[:2]
+            a_urls = activity_urls[:1]
             scout_prompt = (
                 f"{ctx}\n\n"
                 f"Operators to look for: {', '.join(operators)}\n"
                 f"Travel dates: {trip.get('depart_date')} → {trip.get('return_date')}, "
                 f"{trip.get('travellers', 1)} traveller(s)\n\n"
-                f"Navigate each URL below. For each: browser_navigate → browser_snapshot. "
-                f"Interact with search forms only if no results are visible. "
-                f"Stop as soon as you have at least 2 transport prices and 2 hotel prices.\n\n"
-                f"TRANSPORT URLS:\n"
-                + "\n".join(f"  - {u}" for u in transport_urls)
-                + f"\n\nACCOMMODATION URLS:\n"
-                + "\n".join(f"  - {u}" for u in hotel_urls)
-                + f"\n\nACTIVITY URLS:\n"
-                + "\n".join(f"  - {u}" for u in activity_urls)
+                f"Work category by category. Within each category, stop at the first URL that yields prices "
+                f"— do NOT visit the remaining URLs for that category.\n\n"
+                f"TRANSPORT URLS (try in order, stop category on first success):\n"
+                + "\n".join(f"  - {u}" for u in t_urls)
+                + f"\n\nACCOMMODATION URLS (try in order, stop category on first success):\n"
+                + "\n".join(f"  - {u}" for u in h_urls)
+                + f"\n\nACTIVITY URLS (try in order, stop category on first success):\n"
+                + "\n".join(f"  - {u}" for u in a_urls)
             )
-            scout_data = await self._run_agent("scout", scout_prompt, max_turns=10)
+            scout_data = await self._run_agent("scout", scout_prompt, max_turns=20)
         else:
             logger.warning("MCP browser not connected — using Python Playwright fallback.")
             raw_pages = await self._fallback_fetch_urls(all_urls, label="scout-fallback")
@@ -823,8 +832,9 @@ class MCPAgent:
         budget = await self._run_agent(
             "budget",
             f"{ctx}\n\n"
-            f"SCOUT DATA:\n{scout_data[:2000]}\n\n"
+            f"SCOUT DATA:\n{scout_data[:5000]}\n\n"
             f"Calculate all three budget tiers. Use calculator tools for all arithmetic.",
+            max_turns=12,  # 3 tiers × ~3 calculator calls each, allows batching
         )
         logger.info(f"Budget complete: {len(budget)} chars")
 
@@ -834,7 +844,7 @@ class MCPAgent:
         final = await self._run_agent(
             "aggregator",
             f"{ctx}\n\n"
-            f"--- SCOUT DATA ---\n{scout_data[:2000]}\n\n"
+            f"--- SCOUT DATA ---\n{scout_data[:5000]}\n\n"
             f"--- BUDGET ---\n{budget}\n\n"
             f"Produce the complete travel dossier now.",
             max_turns=3,
