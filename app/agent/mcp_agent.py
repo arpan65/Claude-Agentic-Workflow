@@ -4,11 +4,10 @@ Multi-Agent Travel Planner
 
 Architecture
 ------------
-5 agents, 3 MCP servers:
+4 agents, 2 MCP servers:
 
   planner     → no tools  — reads user request, emits JSON manifest with real booking URLs
-  researcher  → playwright (MCP) — navigates booking aggregator pages, extracts prices
-  pricer      → playwright (MCP) + python-playwright fallback — deep-fetches specific pages
+  scout       → playwright (MCP) — single-pass: navigates booking pages AND extracts prices
   budget      → calculator MCP — verified arithmetic only, no mental math
   aggregator  → no tools  — assembles final markdown dossier
 
@@ -17,13 +16,17 @@ MCP Servers
   browser         npx @playwright/mcp@latest   (headless Chromium, no API key needed)
   financial_quant uvx calculator-mcp-server    (no API key needed)
 
-Why no search MCP:
-  duckduckgo-mcp-server is rate-limited to 191-char error responses (confirmed in logs).
-  Instead, the planner generates real booking URLs for Playwright to navigate directly.
-
-Why Python playwright fallback:
-  If the MCP server fails to connect (e.g. PLAYWRIGHT_BROWSERS_PATH not auto-detected),
-  the pricer falls back to direct async playwright calls using the same browser binary.
+Cost optimisations applied
+--------------------------
+  1. Prompt caching (cache_control="ephemeral") on all system prompts — saves ~80% on
+     repeated system-prompt tokens after the first turn.
+  2. Researcher + Pricer merged into a single "scout" agent — halves Playwright overhead
+     and eliminates one full Sonnet multi-turn session.
+  3. max_turns reduced: scout 10 (was 20+20=40), aggregator 3 (was 4).
+  4. Tool result cap: 8 000 chars (was 12 000).
+  5. Context passed to budget/aggregator truncated to 2 000 chars (was 3 000/4 000).
+  6. Aggregator downgraded to Haiku — it only formats structured markdown, no tool use.
+  7. max_tokens set per-role: Sonnet roles 4 096, Haiku roles 2 048.
 
 Setup
 -----
@@ -41,7 +44,7 @@ import re
 import sys
 from contextlib import AsyncExitStack
 from datetime import datetime
-from typing import Optional
+from typing import Callable, Optional
 
 from anthropic import Anthropic
 from mcp import ClientSession, StdioServerParameters
@@ -215,98 +218,46 @@ Provide 3-4 transport URLs, 3 accommodation URLs, 2 activity URLs.
 Output ONLY the JSON object.
 """,
 
-# ── RESEARCHER ──────────────────────────────────────────────────────
-"researcher": """You are the RESEARCHER agent.
+# ── SCOUT (merged researcher + pricer) ──────────────────────────────
+"scout": """You are the SCOUT agent — Travel Data Extractor.
 
-You have Playwright browser tools. Use them to navigate real booking pages and extract data.
+You have Playwright browser tools. Do ONE efficient pass: navigate each URL, extract all
+prices and availability in a single snapshot per site.
 
-Available tools (use these in order for each URL):
-  browser_navigate   → go to a URL
-  browser_snapshot   → get the full page content as accessible text
-  browser_click      → click buttons/links if needed
-  browser_type       → type into search fields if needed
-  browser_wait_for   → wait for content to load
+Tools (use in order per URL):
+  browser_navigate → browser_snapshot → interact only if no results visible → snapshot again
 
-Strategy for EACH URL you receive:
+For EACH URL:
 1. browser_navigate to the URL
-2. browser_snapshot to read the page
-3. If the page shows a search form (no results yet):
-   - Try to fill in dates/origin/destination using browser_type and browser_click
-   - browser_snapshot again after submitting
-4. Extract ALL visible prices, times, names, ratings from the snapshot
-5. If a page blocks or shows CAPTCHA: note it and move on
+2. browser_snapshot — read results immediately
+3. Only if a search form is shown with no results: fill dates/locations with browser_type,
+   browser_click to submit, then one more browser_snapshot
+4. Extract everything visible; move on — do NOT retry more than once per URL
 
-What to record verbatim from each page:
-- Transport: operator, departure time, arrival time, duration, price per person
-- Hotels: name, star rating, neighbourhood, price per night, total price
-- Activities: name, price, opening hours
+What to record:
+- Transport: operator, depart time, arrive time, duration, price/person (lowest + mid + high)
+- Hotels: name, stars, neighbourhood, price/night, total for stay
+- Activities: name, price
+- Any CAPTCHA / block: note and skip
 
-Output structured Markdown:
+Stop immediately once you have at least 2 transport prices AND 2 hotel prices.
 
-## 🚌 Transport Results
+Output compact Markdown:
+
+## 🚌 Transport
 | Operator | Depart | Arrive | Duration | Price/person | Notes |
 |----------|--------|--------|----------|--------------|-------|
 
-## 🏨 Accommodation Results
-| Name | Stars | Neighbourhood | Price/night | Total ({N} nights) | Notes |
-|------|-------|---------------|-------------|---------------------|-------|
+## 🏨 Accommodation
+| Name | Stars | Area | Price/night | Notes |
+|------|-------|------|-------------|-------|
 
-## 🎭 Activities Found
+## 🎭 Activities
 | Name | Price | Notes |
 |------|-------|-------|
 
-## 📋 Navigation Log
-| URL | Outcome | Data extracted? |
-|-----|---------|-----------------|
-
 ## ⚠️ Issues
-(blocked pages, captchas, empty results)
-
-IMPORTANT:
-- Process up to 3 URLs per turn
-- Do NOT loop endlessly
-- Extract everything in one pass per URL
-- If you get results from one URL, stop and return the results
-""",
-
-# ── PRICER ──────────────────────────────────────────────────────────
-"pricer": """You are the PRICER agent — Deep Price Extractor.
-
-You have Playwright browser tools for navigating booking pages.
-
-For each URL provided:
-1. browser_navigate to the URL
-2. browser_snapshot to see the page state
-3. If results aren't showing, interact with the page:
-   - browser_type to fill search fields
-   - browser_click to submit forms or select dates
-   - browser_snapshot again to see results
-4. Scroll through results and extract EVERY price you can see
-
-Focus on extracting:
-- Lowest available price
-- Mid-range price  
-- Highest/premium price
-- Any "sold out" or "unavailable" notices
-
-NEVER invent prices. Record only what pages display.
-If a page completely fails: FETCH_FAILED: <specific reason>
-
-Output:
-
-## ✅ Confirmed Prices
-
-### Transport
-| Operator | Service | Depart | Arrive | Price/person | Availability |
-|----------|---------|--------|--------|--------------|--------------|
-
-### Accommodation  
-| Property | Type | Stars | Price/night | Taxes | Total ({N} nights, {M} guests) |
-|----------|------|-------|-------------|-------|--------------------------------|
-
-## 📋 Fetch Log
-| URL | Status | Notes |
-|-----|--------|-------|
+(CAPTCHAs, blocks, empty results — one line each)
 """,
 
 # ── BUDGET ──────────────────────────────────────────────────────────
@@ -432,6 +383,23 @@ REQUIRED OUTPUT STRUCTURE:
 """,
 }
 
+# Scout needs Sonnet for multi-step tool use and complex page interaction.
+# Planner, budget, and aggregator are structured tasks where Haiku is sufficient.
+MODEL_PER_ROLE: dict[str, str] = {
+    "planner":    "claude-haiku-4-5-20251001",
+    "scout":      "claude-sonnet-4-6",
+    "budget":     "claude-haiku-4-5-20251001",
+    "aggregator": "claude-haiku-4-5-20251001",
+}
+
+# Output token budget per role — Haiku roles capped at 2 048 to reduce cost.
+MAX_TOKENS_PER_ROLE: dict[str, int] = {
+    "planner":    1024,
+    "scout":      4096,
+    "budget":     2048,
+    "aggregator": 4096,   # markdown output can be long; keep generous cap
+}
+
 
 # ================================================================== #
 #  PYTHON PLAYWRIGHT FALLBACK FETCHER                                  #
@@ -493,7 +461,7 @@ class PlaywrightFallback:
             await page.goto(url, timeout=30_000, wait_until="domcontentloaded")
             await page.wait_for_timeout(wait_ms)
             text = await page.inner_text("body")
-            return text[:15_000]  # cap to avoid token overload
+            return text[:10_000]  # cap to avoid token overload
         except Exception as e:
             return f"FETCH_FAILED: {e}"
         finally:
@@ -537,7 +505,7 @@ class MCPAgent:
                 session = await self.stack.enter_async_context(
                     ClientSession(read, write)
                 )
-                await asyncio.wait_for(session.initialize(), timeout=20)
+                await asyncio.wait_for(session.initialize(), timeout=45)
                 self.session_map[name] = session
                 self.sessions.append(session)
 
@@ -573,8 +541,7 @@ class MCPAgent:
     def _filter_tools(self, role: str) -> list:
         allow: dict[str, list[str]] = {
             "planner":    [],
-            "researcher": ["browser"],
-            "pricer":     ["browser"],
+            "scout":      ["browser"],
             "budget":     ["financial_quant"],
             "aggregator": [],
         }
@@ -612,7 +579,7 @@ class MCPAgent:
                 return f"EMPTY_RESULT: {len(text)} chars returned."
 
             logger.info(f"[{agent_role}] ← {tool_call.name}: {len(text)} chars")
-            return text[:12_000]  # cap to avoid token overload
+            return text[:8_000]  # cap to avoid token overload
 
         except asyncio.TimeoutError:
             logger.error(f"[{agent_role}] ⏱️  {tool_call.name} timed out (45s)")
@@ -628,7 +595,16 @@ class MCPAgent:
         user_message: str,
         max_turns: int = 16,
     ) -> str:
-        system = AGENT_SYSTEM_PROMPTS[role]
+        system_text = AGENT_SYSTEM_PROMPTS[role]
+        # Wrap system prompt with cache_control so the first turn writes it to
+        # the prompt cache and subsequent turns read it at ~10% of input cost.
+        system = [
+            {
+                "type": "text",
+                "text": system_text,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
         history = [{"role": "user", "content": user_message}]
         available = self._filter_tools(role)
 
@@ -645,17 +621,33 @@ class MCPAgent:
             for t in available
         ]
 
+        model = MODEL_PER_ROLE.get(role, "claude-sonnet-4-6")
+        max_tokens = MAX_TOKENS_PER_ROLE.get(role, 4096)
+
         for turn in range(max_turns):
             kwargs: dict = dict(
-                model="claude-haiku-4-5-20251001",
+                model=model,
                 system=system,
-                max_tokens=4096,
+                max_tokens=max_tokens,
                 messages=history,
             )
             if claude_tools:
                 kwargs["tools"] = claude_tools
 
             response = self.client.messages.create(**kwargs)
+
+            # Log cache usage when available (helps validate caching is working)
+            usage = getattr(response, "usage", None)
+            if usage:
+                cache_read = getattr(usage, "cache_read_input_tokens", 0)
+                cache_write = getattr(usage, "cache_creation_input_tokens", 0)
+                if cache_read or cache_write:
+                    logger.info(
+                        f"[{role}] turn={turn} cache_write={cache_write} "
+                        f"cache_read={cache_read} "
+                        f"input={usage.input_tokens} output={usage.output_tokens}"
+                    )
+
             history.append({"role": "assistant", "content": response.content})
 
             if response.stop_reason != "tool_use":
@@ -682,10 +674,10 @@ class MCPAgent:
             return "FETCH_FAILED: Playwright fallback not available."
 
         results = []
-        for url in urls[:8]:
+        for url in urls[:6]:
             logger.info(f"[{label}] Fallback fetch: {url}")
             text = await self.pw_fallback.fetch(url)
-            results.append(f"### {url}\n{text[:3000]}\n")
+            results.append(f"### {url}\n{text[:2000]}\n")
             await asyncio.sleep(1.5)  # polite delay between requests
 
         return "\n".join(results) if results else "No data fetched."
@@ -751,14 +743,23 @@ class MCPAgent:
     # ================================================================ #
     #  PIPELINE                                                          #
     # ================================================================ #
-    async def run_agent(self, user_input: str) -> str:
+    async def run_agent(
+        self,
+        user_input: str,
+        progress_callback: Optional[Callable] = None,
+    ) -> str:
         if not self.sessions:
             await self.connect()
+
+        async def _progress(msg: str) -> None:
+            if progress_callback:
+                await progress_callback(msg)
 
         now = datetime.now().strftime("%B %d, %Y")
 
         # ── PHASE 1: PLANNING ──────────────────────────────────────── #
         self._log_phase("PHASE 1: PLANNING")
+        await _progress("🗺️ Planning your route...")
         plan_raw = await self._run_agent(
             "planner",
             f"Today is {now}.\n\nUser travel request:\n{user_input}",
@@ -784,15 +785,19 @@ class MCPAgent:
             f"{len(hotel_urls)} hotel, {len(activity_urls)} activity"
         )
 
-        # ── PHASE 2: RESEARCH (Playwright navigates booking pages) ─── #
-        self._log_phase("PHASE 2: RESEARCH (Playwright)")
+        # ── PHASE 2: SCOUT (single-pass research + pricing) ────────── #
+        self._log_phase("PHASE 2: SCOUT (research + pricing)")
+        await _progress("🔍 Scouting prices and travel options...")
 
         if self._mcp_browser_connected:
-            research_prompt = (
+            scout_prompt = (
                 f"{ctx}\n\n"
-                f"Operators to look for: {', '.join(operators)}\n\n"
-                f"Navigate EACH of these URLs using browser_navigate + browser_snapshot. "
-                f"Extract all prices, times, hotel names, and ratings you find.\n\n"
+                f"Operators to look for: {', '.join(operators)}\n"
+                f"Travel dates: {trip.get('depart_date')} → {trip.get('return_date')}, "
+                f"{trip.get('travellers', 1)} traveller(s)\n\n"
+                f"Navigate each URL below. For each: browser_navigate → browser_snapshot. "
+                f"Interact with search forms only if no results are visible. "
+                f"Stop as soon as you have at least 2 transport prices and 2 hotel prices.\n\n"
                 f"TRANSPORT URLS:\n"
                 + "\n".join(f"  - {u}" for u in transport_urls)
                 + f"\n\nACCOMMODATION URLS:\n"
@@ -800,68 +805,39 @@ class MCPAgent:
                 + f"\n\nACTIVITY URLS:\n"
                 + "\n".join(f"  - {u}" for u in activity_urls)
             )
-            research = await self._run_agent("researcher", research_prompt, max_turns=20)
+            scout_data = await self._run_agent("scout", scout_prompt, max_turns=10)
         else:
-            logger.warning("MCP browser not connected — using Python Playwright fallback for research.")
-            raw_pages = await self._fallback_fetch_urls(all_urls, label="researcher-fallback")
-            research = (
+            logger.warning("MCP browser not connected — using Python Playwright fallback.")
+            raw_pages = await self._fallback_fetch_urls(all_urls, label="scout-fallback")
+            scout_data = (
                 f"## Raw Page Content (Python Playwright Fallback)\n\n"
                 f"{raw_pages}\n\n"
                 f"Note: MCP browser was unavailable. Content extracted directly."
             )
 
-        logger.info(f"Research complete: {len(research)} chars")
+        logger.info(f"Scout complete: {len(scout_data)} chars")
 
-        # ── PHASE 3: DEEP PRICE EXTRACTION ────────────────────────── #
-        self._log_phase("PHASE 3: DEEP PRICE EXTRACTION")
-
-        if self._mcp_browser_connected:
-            pricer_prompt = (
-                f"{ctx}\n\n"
-                f"The researcher above visited booking pages. Now do a DEEPER pass:\n"
-                f"For each transport URL, try to interact with search forms to get "
-                f"specific prices for the travel dates.\n\n"
-                f"TRANSPORT URLS (get date-specific prices):\n"
-                + "\n".join(f"  - {u}" for u in transport_urls)
-                + f"\n\nACCOMMODATION URLS (get prices for {trip.get('depart_date')} "
-                f"to {trip.get('return_date')}, {trip.get('travellers', 1)} guests):\n"
-                + "\n".join(f"  - {u}" for u in hotel_urls)
-                + "\n\nFor each page: navigate → snapshot → interact if needed → snapshot again."
-            )
-            live_prices = await self._run_agent("pricer", pricer_prompt, max_turns=20)
-        else:
-            logger.warning("MCP browser not connected — using Python Playwright fallback for pricing.")
-            raw_pages = await self._fallback_fetch_urls(
-                transport_urls + hotel_urls, label="pricer-fallback"
-            )
-            live_prices = (
-                f"## Raw Price Page Content (Python Playwright Fallback)\n\n"
-                f"{raw_pages}"
-            )
-
-        logger.info(f"Price extraction complete: {len(live_prices)} chars")
-
-        # ── PHASE 4: BUDGET CALCULATION ────────────────────────────── #
-        self._log_phase("PHASE 4: BUDGET CALCULATION")
+        # ── PHASE 3: BUDGET CALCULATION ────────────────────────────── #
+        self._log_phase("PHASE 3: BUDGET CALCULATION")
+        await _progress("📊 Calculating budget tiers...")
         budget = await self._run_agent(
             "budget",
             f"{ctx}\n\n"
-            f"RESEARCH DATA:\n{research[:3000]}\n\n"
-            f"LIVE PRICE DATA:\n{live_prices}\n\n"
+            f"SCOUT DATA:\n{scout_data[:2000]}\n\n"
             f"Calculate all three budget tiers. Use calculator tools for all arithmetic.",
         )
         logger.info(f"Budget complete: {len(budget)} chars")
 
-        # ── PHASE 5: AGGREGATION ────────────────────────────────────── #
-        self._log_phase("PHASE 5: AGGREGATION")
+        # ── PHASE 4: AGGREGATION ────────────────────────────────────── #
+        self._log_phase("PHASE 4: AGGREGATION")
+        await _progress("📋 Finalising your travel dossier...")
         final = await self._run_agent(
             "aggregator",
             f"{ctx}\n\n"
-            f"--- RESEARCH ---\n{research[:4000]}\n\n"
-            f"--- LIVE PRICES ---\n{live_prices[:4000]}\n\n"
+            f"--- SCOUT DATA ---\n{scout_data[:2000]}\n\n"
             f"--- BUDGET ---\n{budget}\n\n"
             f"Produce the complete travel dossier now.",
-            max_turns=4,
+            max_turns=3,
         )
         return final
 

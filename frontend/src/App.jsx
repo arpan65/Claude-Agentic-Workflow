@@ -1,228 +1,323 @@
 import React, { useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
+
+const PHASES = [
+  { icon: "🗺️", label: "Planning your route" },
+  { icon: "🔍", label: "Researching travel options" },
+  { icon: "💰", label: "Extracting live prices" },
+  { icon: "📊", label: "Calculating budget tiers" },
+  { icon: "📋", label: "Finalising your dossier" },
+];
+
+const BUDGET_OPTIONS = [
+  { value: "any", label: "Any" },
+  { value: "economy", label: "Economy" },
+  { value: "mid-range", label: "Mid-Range" },
+  { value: "comfort", label: "Comfort" },
+];
 
 const toSafeString = (value) => {
   if (typeof value === "string") return value;
   if (value == null) return "";
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
+  try { return JSON.stringify(value, null, 2); } catch { return String(value); }
 };
 
-const renderAssistantContent = (value) => {
-  const text = toSafeString(value);
-  const lines = text.split("\n");
-
-  return (
-    <div className="assistant-content">
-      {lines.map((rawLine, idx) => {
-        const line = rawLine.trim();
-        if (!line) {
-          return <div key={`line-${idx}`} className="assistant-line spacer" />;
-        }
-
-        if (line === "•") {
-          return <div key={`line-${idx}`} className="assistant-line spacer" />;
-        }
-
-        if (/^#{1,6}\s+/.test(line)) {
-          const title = line.replace(/^#{1,6}\s+/, "");
-          return (
-            <div key={`line-${idx}`} className="assistant-line heading">
-              {title}
-            </div>
-          );
-        }
-
-        if (/^[-*]\s+/.test(line) || /^[0-9]+\.\s+/.test(line) || /^•\s+/.test(line)) {
-          const bulletText = line
-            .replace(/^[-*]\s+/, "")
-            .replace(/^[0-9]+\.\s+/, "")
-            .replace(/^•\s+/, "");
-          return (
-            <div key={`line-${idx}`} className="assistant-line bullet">
-              <span className="bullet-dot">•</span>
-              <span>{bulletText.replace(/\*\*(.*?)\*\*/g, "$1")}</span>
-            </div>
-          );
-        }
-
-        const clean = line.replace(/\*\*(.*?)\*\*/g, "$1");
-        return (
-          <div key={`line-${idx}`} className="assistant-line paragraph">
-            {clean}
-          </div>
-        );
-      })}
-    </div>
-  );
+const today = () => new Date().toISOString().split("T")[0];
+const addDays = (base, n) => {
+  const d = new Date(base);
+  d.setDate(d.getDate() + n);
+  return d.toISOString().split("T")[0];
 };
 
-function App() {
-  const [messages, setMessages] = useState([]);
-  const [input, setInput] = useState("");
+export default function App() {
+  const [form, setForm] = useState({
+    from: "",
+    to: "",
+    depart: addDays(today(), 7),
+    returnDate: addDays(today(), 10),
+    pax: 2,
+    budget: "any",
+  });
   const [loading, setLoading] = useState(false);
-  const [sessionId, setSessionId] = useState(null);
+  const [phaseIdx, setPhaseIdx] = useState(0);
+  const [result, setResult] = useState(null);
   const [error, setError] = useState("");
-  const chatListRef = useRef(null);
+  const [sessionId, setSessionId] = useState(null);
+  const resultsRef = useRef(null);
 
   useEffect(() => {
-    const container = chatListRef.current;
-    if (!container) return;
-    container.scrollTop = container.scrollHeight;
-  }, [messages, loading, error]);
+    if (!loading) return;
+    setPhaseIdx(0);
+    const timer = setInterval(() => {
+      setPhaseIdx((i) => Math.min(i + 1, PHASES.length - 1));
+    }, 22000);
+    return () => clearInterval(timer);
+  }, [loading]);
 
-  const sendMessage = async () => {
-    const trimmed = input.trim();
-    if (!trimmed || loading) return;
+  useEffect(() => {
+    if (result && resultsRef.current) {
+      resultsRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [result]);
 
+  const set = (key) => (e) =>
+    setForm((f) => ({ ...f, [key]: e.target.value }));
+
+  const buildMessage = () => {
+    const fmt = (d) => {
+      const [y, m, day] = d.split("-");
+      return `${["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][+m-1]} ${+day} ${y}`;
+    };
+    const budgetPart = form.budget !== "any" ? `, ${form.budget} budget` : "";
+    return `${form.from} to ${form.to}, ${fmt(form.depart)} to ${fmt(form.returnDate)}, ${form.pax} ${form.pax === 1 ? "person" : "people"}${budgetPart}`;
+  };
+
+  const handleSearch = async (e) => {
+    e.preventDefault();
+    if (!form.from.trim() || !form.to.trim() || loading) return;
     setError("");
+    setResult(null);
     setLoading(true);
-    setMessages((prev) => [...prev, { role: "user", content: trimmed }]);
-    setInput("");
 
     try {
-      const res = await fetch(`${API_BASE}/api/chat`, {
+      const res = await fetch(`${API_BASE}/api/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: trimmed,
-          session_id: sessionId
-        })
+        body: JSON.stringify({ message: buildMessage(), session_id: sessionId }),
       });
-
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || "Unable to get response from backend");
+        throw new Error(data.detail || "Unable to reach backend");
       }
 
-      const data = await res.json();
-      setSessionId(data.session_id);
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: toSafeString(data.reply) || "No response from backend." }
-      ]);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop();
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          let data;
+          try { data = JSON.parse(line.slice(6)); } catch { continue; }
+
+          if (data.type === "session") setSessionId(data.session_id);
+          else if (data.type === "phase") {
+            const idx = PHASES.findIndex((p) => data.phase.includes(p.icon));
+            if (idx >= 0) setPhaseIdx(idx);
+          }
+          else if (data.type === "result") setResult(toSafeString(data.reply) || "No response from backend.");
+          else if (data.type === "error") throw new Error(data.message || "Agent error");
+        }
+      }
     } catch (err) {
-      setError(toSafeString(err?.message ?? err) || "Unexpected error occurred");
+      setError(toSafeString(err?.message ?? err) || "Unexpected error");
     } finally {
       setLoading(false);
     }
   };
 
-  const clearConversation = async () => {
-    setMessages([]);
+  const handleNewSearch = () => {
+    setResult(null);
     setError("");
-
-    if (!sessionId) return;
-
-    try {
-      await fetch(`${API_BASE}/api/reset`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sessionId })
-      });
-    } catch {
-      // Ignore reset errors and allow local clear.
-    } finally {
-      setSessionId(null);
-    }
-  };
-
-  const handleSubmit = (event) => {
-    event.preventDefault();
-    sendMessage();
   };
 
   return (
-    <div className="layout">
-      <aside className="sidebar">
-        <div className="logo-wrap">
-          <div className="logo">MCP</div>
-          <h2>Control Center</h2>
+    <div className="page">
+      {/* ── NAV ── */}
+      <nav className="nav">
+        <div className="nav-brand">
+          <span className="nav-logo">✈️</span>
+          <span className="nav-title">TripAI</span>
         </div>
-        <div className="status-card">
-          <h3>System Status</h3>
-          <p>
-            <span className="dot online" />
-            MCP Engine Active
-          </p>
-          <p>
-            <span className="dot info" />
-            Tool: DuckDuckGo Search
-          </p>
-        </div>
-        <button className="clear-btn" onClick={clearConversation}>
-          Clear Conversation
-        </button>
-      </aside>
-
-      <main className="chat-shell">
-        <header className="topbar">
-          <h1>Claude Live Investigator</h1>
-          <p>Real-time web-connected intelligence via Model Context Protocol</p>
-        </header>
-
-        <section className="chat-list" ref={chatListRef}>
-          {messages.length === 0 && !loading ? (
-            <div className="empty-state">
-              Ask for live data, news, stock prices, or browser-assisted tasks.
-            </div>
-          ) : (
-            <>
-              {messages.map((message, idx) => (
-                <article
-                  key={`${message?.role === "assistant" ? "assistant" : "user"}-${idx}`}
-                  className={`bubble-row ${message?.role === "assistant" ? "assistant" : "user"}`}
-                >
-                  <div className={`bubble ${message?.role === "assistant" ? "assistant" : "user"}`}>
-                    <div className="bubble-role">
-                      {message?.role === "assistant" ? "Assistant" : "You"}
-                    </div>
-                    <div className="bubble-content">
-                      {message?.role === "assistant"
-                        ? renderAssistantContent(message?.content)
-                        : toSafeString(message?.content)}
-                    </div>
-                  </div>
-                </article>
-              ))}
-              {loading ? (
-                <article className="bubble-row assistant">
-                  <div className="bubble assistant thinking-bubble">
-                    <div className="bubble-role">Assistant</div>
-                    <div className="thinking-row">
-                      <span>Thinking</span>
-                      <span className="thinking-dots" aria-hidden="true">
-                        <i />
-                        <i />
-                        <i />
-                      </span>
-                    </div>
-                  </div>
-                </article>
-              ) : null}
-            </>
-          )}
-        </section>
-
-        {error ? <div className="error-box">{toSafeString(error)}</div> : null}
-
-        <form className="input-row" onSubmit={handleSubmit}>
-          <input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask me for live data, news, or stock prices..."
-            disabled={loading}
-          />
-          <button type="submit" disabled={loading || !input.trim()}>
-            {loading ? "Thinking..." : "Send"}
+        {result && (
+          <button className="btn-ghost" onClick={handleNewSearch}>
+            + New Search
           </button>
-        </form>
-      </main>
+        )}
+      </nav>
+
+      {/* ── HERO ── */}
+      <section className="hero">
+        <div className="hero-inner">
+          <h1 className="hero-headline">Where to next?</h1>
+          <p className="hero-sub">
+            AI agents search real booking sites, pull live prices, and build your trip dossier.
+          </p>
+
+          {/* ── SEARCH CARD ── */}
+          <form className="search-card" onSubmit={handleSearch}>
+            <div className="search-fields">
+
+              <div className="field-group">
+                <label>From</label>
+                <input
+                  type="text"
+                  placeholder="Toronto"
+                  value={form.from}
+                  onChange={set("from")}
+                  disabled={loading}
+                  required
+                />
+              </div>
+
+              <div className="divider" />
+
+              <div className="field-group">
+                <label>To</label>
+                <input
+                  type="text"
+                  placeholder="Montreal"
+                  value={form.to}
+                  onChange={set("to")}
+                  disabled={loading}
+                  required
+                />
+              </div>
+
+              <div className="divider" />
+
+              <div className="field-group">
+                <label>Depart</label>
+                <input
+                  type="date"
+                  value={form.depart}
+                  min={today()}
+                  onChange={set("depart")}
+                  disabled={loading}
+                />
+              </div>
+
+              <div className="divider" />
+
+              <div className="field-group">
+                <label>Return</label>
+                <input
+                  type="date"
+                  value={form.returnDate}
+                  min={form.depart}
+                  onChange={set("returnDate")}
+                  disabled={loading}
+                />
+              </div>
+
+              <div className="divider" />
+
+              <div className="field-group field-group--narrow">
+                <label>Travellers</label>
+                <div className="pax-control">
+                  <button
+                    type="button"
+                    className="pax-btn"
+                    onClick={() => setForm((f) => ({ ...f, pax: Math.max(1, f.pax - 1) }))}
+                    disabled={loading || form.pax <= 1}
+                  >−</button>
+                  <span className="pax-val">{form.pax}</span>
+                  <button
+                    type="button"
+                    className="pax-btn"
+                    onClick={() => setForm((f) => ({ ...f, pax: Math.min(9, f.pax + 1) }))}
+                    disabled={loading || form.pax >= 9}
+                  >+</button>
+                </div>
+              </div>
+
+              <div className="divider" />
+
+              <div className="field-group field-group--narrow">
+                <label>Budget</label>
+                <select value={form.budget} onChange={set("budget")} disabled={loading}>
+                  {BUDGET_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+              </div>
+
+            </div>
+
+            <button
+              type="submit"
+              className="btn-search"
+              disabled={loading || !form.from.trim() || !form.to.trim()}
+            >
+              {loading ? (
+                <span className="spinner" />
+              ) : (
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
+                </svg>
+              )}
+            </button>
+          </form>
+        </div>
+      </section>
+
+      {/* ── PROGRESS ── */}
+      {loading && (
+        <section className="progress-section">
+          <div className="progress-track">
+            {PHASES.map((p, i) => (
+              <div key={i} className={`progress-step ${i < phaseIdx ? "done" : i === phaseIdx ? "active" : ""}`}>
+                <div className="step-dot">
+                  {i < phaseIdx ? (
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                  ) : (
+                    <span>{p.icon}</span>
+                  )}
+                </div>
+                <span className="step-label">{p.label}</span>
+              </div>
+            ))}
+          </div>
+          <p className="progress-hint">This takes 2–4 minutes — agents are browsing real booking pages.</p>
+        </section>
+      )}
+
+      {/* ── ERROR ── */}
+      {error && (
+        <div className="error-banner">
+          <span>⚠️</span>
+          <span>{error}</span>
+        </div>
+      )}
+
+      {/* ── RESULTS ── */}
+      {result && (
+        <section className="results-section" ref={resultsRef}>
+          <div className="results-card">
+            <div className="results-meta">
+              <span className="results-route">{form.from} → {form.to}</span>
+              <span className="results-badge">{form.pax} traveller{form.pax !== 1 ? "s" : ""}</span>
+            </div>
+            <div className="results-body">
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  a: ({ node, ...props }) => (
+                    <a {...props} target="_blank" rel="noopener noreferrer" />
+                  ),
+                }}
+              >
+                {result}
+              </ReactMarkdown>
+            </div>
+          </div>
+        </section>
+      )}
+
+      <footer className="footer">
+        Powered by Claude AI · live data via Playwright · not affiliated with any booking platform
+      </footer>
     </div>
   );
 }
-export default App;
