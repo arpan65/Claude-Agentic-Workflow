@@ -78,9 +78,14 @@ export default function App() {
   const [error, setError] = useState("");
   const [sessionId, setSessionId] = useState(null);
   const [testMode, setTestMode] = useState(false);
+  const [darkMode, setDarkMode] = useState(() => window.matchMedia("(prefers-color-scheme: dark)").matches);
   const resultsRef = useRef(null);
   const departRef  = useRef(null);
   const returnRef  = useRef(null);
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", darkMode ? "dark" : "light");
+  }, [darkMode]);
 
   useEffect(() => {
     if (!loading) return;
@@ -229,6 +234,9 @@ export default function App() {
           {testMode && (
             <span className="test-mode-badge">No API calls</span>
           )}
+          <button className="btn-icon" onClick={() => setDarkMode(d => !d)} title="Toggle dark mode">
+            {darkMode ? "☀️" : "🌙"}
+          </button>
           {result && (
             <button className="btn-ghost" onClick={handleNewSearch}>
               + New Search
@@ -385,7 +393,7 @@ export default function App() {
             <button
               type="submit"
               className="btn-search"
-              disabled={loading || !form.from.trim() || !form.to.trim()}
+              disabled={loading}
             >
               {loading ? (
                 <span className="spinner" />

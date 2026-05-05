@@ -1,6 +1,4 @@
-import React from "react";
-
-// ─── Trip Header ──────────────────────────────────────────────────────────────
+import React, { useCallback, useState } from "react";
 
 function fmtDate(d) {
   if (!d) return "—";
@@ -8,6 +6,8 @@ function fmtDate(d) {
   const [, m, day] = d.split("-");
   return `${months[+m - 1]} ${+day}`;
 }
+
+// ─── Trip Header ──────────────────────────────────────────────────────────────
 
 function TripHeader({ trip }) {
   return (
@@ -27,44 +27,27 @@ function TripHeader({ trip }) {
   );
 }
 
-// ─── Generic card wrapper ─────────────────────────────────────────────────────
+// ─── Tab Bar ──────────────────────────────────────────────────────────────────
 
-function Card({ icon, title, color, bg, border, children }) {
+function TabBar({ tabs, active, onSelect }) {
   return (
-    <div className="trip-card" style={{ "--sc": color, "--sb": bg, "--sbr": border }}>
-      <div className="trip-card-hdr">
-        <span className="card-icon">{icon}</span>
-        <span className="card-title">{title}</span>
-      </div>
-      <div className="trip-card-body">
-        {children}
-      </div>
+    <div className="result-tabs">
+      {tabs.map((t) => (
+        <button
+          key={t.id}
+          className={`tab-btn${active === t.id ? " tab-btn--active" : ""}`}
+          onClick={() => onSelect(t.id)}
+        >
+          <span className="tab-icon">{t.icon}</span>
+          <span>{t.label}</span>
+          {t.badge > 0 && <span className="tab-badge">{t.badge}</span>}
+        </button>
+      ))}
     </div>
   );
 }
 
-// ─── Data table ───────────────────────────────────────────────────────────────
-
-function DataTable({ headers, rows }) {
-  return (
-    <div className="table-scroll">
-      <table className="data-table">
-        <thead>
-          <tr>{headers.map((h, i) => <th key={i}>{h}</th>)}</tr>
-        </thead>
-        <tbody>
-          {rows.map((row, i) => (
-            <tr key={i}>
-              {row.map((cell, j) => <td key={j}>{cell ?? "—"}</td>)}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-// ─── Transport ────────────────────────────────────────────────────────────────
+// ─── Transport Panel ──────────────────────────────────────────────────────────
 
 function TransportRows({ rows }) {
   if (!rows || rows.length === 0) return null;
@@ -84,13 +67,13 @@ function TransportRows({ rows }) {
   ));
 }
 
-function TransportSection({ transport, trip }) {
-  if (!transport) return null;
+function TransportPanel({ transport, trip }) {
+  if (!transport) return <p style={{ color: "var(--text-soft)" }}>No transport data.</p>;
   const headers = ["Operator", "Depart", "Arrive", "Duration", "Price/person", "Book"];
   return (
-    <Card icon={transport.emoji || "✈️"} title="Travel Options" color="#3b82f6" bg="#eff6ff" border="#bfdbfe">
+    <>
       {transport.outbound?.length > 0 && (
-        <>
+        <div className="panel-section">
           <div className="subtable-label">Outbound · {fmtDate(trip?.depart_date)}</div>
           <div className="table-scroll">
             <table className="data-table">
@@ -98,71 +81,69 @@ function TransportSection({ transport, trip }) {
               <tbody><TransportRows rows={transport.outbound} /></tbody>
             </table>
           </div>
-        </>
+        </div>
       )}
-      {transport.return_trips?.length > 0 && (
-        <>
-          <div className="subtable-label" style={{ marginTop: 16 }}>Return · {fmtDate(trip?.return_date)}</div>
+      {Array.isArray(transport.return_trips) && transport.return_trips.length > 0 && (
+        <div className="panel-section">
+          <div className="subtable-label">Return · {fmtDate(trip?.return_date)}</div>
           <div className="table-scroll">
             <table className="data-table">
               <thead><tr>{headers.map((h, i) => <th key={i}>{h}</th>)}</tr></thead>
               <tbody><TransportRows rows={transport.return_trips} /></tbody>
             </table>
           </div>
-        </>
+        </div>
       )}
-    </Card>
+    </>
   );
 }
 
-// ─── Accommodation ────────────────────────────────────────────────────────────
+// ─── Stay Panel ───────────────────────────────────────────────────────────────
 
 function Stars({ n }) {
   if (!n) return <span className="no-val">—</span>;
   return <span className="stars">{"★".repeat(n)}{"☆".repeat(Math.max(0, 5 - n))}</span>;
 }
 
-function AccommodationSection({ items }) {
-  if (!items || items.length === 0) return null;
+function StayPanel({ items }) {
+  if (!items || items.length === 0) return <p style={{ color: "var(--text-soft)" }}>No accommodation data.</p>;
   return (
-    <Card icon="🏨" title="Accommodation" color="#f97316" bg="#fff7ed" border="#fed7aa">
-      <div className="table-scroll">
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Property</th><th>Type</th><th>Area</th><th>Stars</th>
-              <th>Per night</th><th>Stay total</th><th>Book</th>
+    <div className="table-scroll">
+      <table className="data-table">
+        <thead>
+          <tr>
+            <th>Property</th><th>Type</th><th>Area</th><th>Stars</th>
+            <th>Per night</th><th>Stay total</th><th>Book</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((h, i) => (
+            <tr key={i}>
+              <td className="cell-strong">{h.name}</td>
+              <td>{h.type}</td>
+              <td>{h.neighbourhood || "—"}</td>
+              <td><Stars n={h.stars} /></td>
+              <td className="cell-price">{h.price_per_night}</td>
+              <td className="cell-price">{h.total_stay}</td>
+              <td>
+                {h.url
+                  ? <a href={h.url} className="book-link" target="_blank" rel="noopener noreferrer">Book →</a>
+                  : "—"}
+              </td>
             </tr>
-          </thead>
-          <tbody>
-            {items.map((h, i) => (
-              <tr key={i}>
-                <td className="cell-strong">{h.name}</td>
-                <td>{h.type}</td>
-                <td>{h.neighbourhood || "—"}</td>
-                <td><Stars n={h.stars} /></td>
-                <td className="cell-price">{h.price_per_night}</td>
-                <td className="cell-price">{h.total_stay}</td>
-                <td>
-                  {h.url
-                    ? <a href={h.url} className="book-link" target="_blank" rel="noopener noreferrer">Book →</a>
-                    : "—"}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </Card>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
-// ─── Budget ───────────────────────────────────────────────────────────────────
+// ─── Budget Panel ─────────────────────────────────────────────────────────────
 
 const TIER_CFG = [
-  { key: "economy",   label: "Economy",   color: "#3b82f6", bg: "#eff6ff", border: "#bfdbfe" },
-  { key: "mid_range", label: "Mid-Range", color: "#f59e0b", bg: "#fffbeb", border: "#fde68a" },
-  { key: "comfort",   label: "Comfort",   color: "#8b5cf6", bg: "#f5f3ff", border: "#ddd6fe" },
+  { key: "economy",   label: "Economy",   color: "#3b82f6", bg: "rgba(59,130,246,0.08)",  border: "rgba(59,130,246,0.22)" },
+  { key: "mid_range", label: "Mid-Range", color: "#f59e0b", bg: "rgba(245,158,11,0.08)",  border: "rgba(245,158,11,0.22)" },
+  { key: "comfort",   label: "Comfort",   color: "#8b5cf6", bg: "rgba(139,92,246,0.08)",  border: "rgba(139,92,246,0.22)" },
 ];
 
 const BUDGET_ROWS = [
@@ -172,14 +153,10 @@ const BUDGET_ROWS = [
   { key: "activities",    label: "Activities" },
 ];
 
-function BudgetSection({ budget, trip }) {
-  if (!budget) return null;
+function BudgetPanel({ budget, trip }) {
+  if (!budget) return <p style={{ color: "var(--text-soft)" }}>No budget data.</p>;
   return (
-    <Card
-      icon="💰"
-      title={`Budget · ${trip?.travellers ?? ""} traveller${trip?.travellers !== 1 ? "s" : ""} · ${trip?.nights ?? ""} nights`}
-      color="#10b981" bg="#ecfdf5" border="#a7f3d0"
-    >
+    <>
       <div className="tier-grid">
         {TIER_CFG.map(({ key, label, color, bg, border }) => {
           const tier = budget[key];
@@ -203,28 +180,18 @@ function BudgetSection({ budget, trip }) {
           );
         })}
       </div>
-      {budget.notes && <p className="budget-note">{budget.notes}</p>}
-    </Card>
+      {budget.notes && <div className="budget-note">{budget.notes}</div>}
+    </>
   );
 }
 
-// ─── Itinerary ────────────────────────────────────────────────────────────────
+// ─── Itinerary Panel ──────────────────────────────────────────────────────────
 
-function TimeSlot({ icon, label, text }) {
-  if (!text) return null;
+function ItineraryPanel({ days, note }) {
+  if (!days || days.length === 0) return <p style={{ color: "var(--text-soft)" }}>No itinerary data.</p>;
   return (
-    <div className="time-slot">
-      <div className="time-label">{icon} {label}</div>
-      <div className="time-text">{text}</div>
-    </div>
-  );
-}
-
-function ItinerarySection({ days, note }) {
-  if (!days || days.length === 0) return null;
-  return (
-    <Card icon="📅" title="Itinerary" color="#8b5cf6" bg="#f5f3ff" border="#ddd6fe">
-      {note && <p style={{ margin: "0 0 12px", fontSize: "0.8rem", color: "#7c6fad" }}>{note}</p>}
+    <>
+      {note && <p style={{ marginBottom: 14, fontSize: "0.8rem", color: "var(--text-soft)", fontStyle: "italic" }}>{note}</p>}
       <div className="day-list">
         {days.map((d, i) => (
           <div key={i} className="day-card">
@@ -234,69 +201,144 @@ function ItinerarySection({ days, note }) {
               {d.label && <span className="day-label">{d.label}</span>}
             </div>
             <div className="day-body">
-              <TimeSlot icon="🌅" label="Morning" text={d.morning} />
-              <TimeSlot icon="☀️" label="Afternoon" text={d.afternoon} />
-              <TimeSlot icon="🌙" label="Evening" text={d.evening} />
+              {d.morning   && <div className="time-slot"><div className="time-label">🌅 Morning</div><div className="time-text">{d.morning}</div></div>}
+              {d.afternoon && <div className="time-slot"><div className="time-label">☀️ Afternoon</div><div className="time-text">{d.afternoon}</div></div>}
+              {d.evening   && <div className="time-slot"><div className="time-label">🌙 Evening</div><div className="time-text">{d.evening}</div></div>}
             </div>
           </div>
         ))}
       </div>
-    </Card>
+    </>
   );
 }
 
-// ─── Getting Around ───────────────────────────────────────────────────────────
+// ─── Getting Around Panel ─────────────────────────────────────────────────────
 
-function GettingAroundSection({ items }) {
-  if (!items || items.length === 0) return null;
+function AroundPanel({ items }) {
+  if (!items || items.length === 0) return <p style={{ color: "var(--text-soft)" }}>No local transport data.</p>;
   return (
-    <Card icon="🚇" title="Getting Around" color="#0ea5e9" bg="#f0f9ff" border="#bae6fd">
-      <DataTable
-        headers={["Option", "Cost", "Notes"]}
-        rows={items.map(r => [
-          <span className="cell-strong">{r.option}</span>,
-          <span className="cell-price">{r.cost}</span>,
-          r.notes,
-        ])}
-      />
-    </Card>
+    <div className="around-grid">
+      {items.map((r, i) => (
+        <div key={i} className="around-item">
+          <div className="around-option">{r.option}</div>
+          <div className="around-cost">{r.cost}</div>
+          <div className="around-notes">{r.notes}</div>
+        </div>
+      ))}
+    </div>
   );
 }
 
-// ─── Data Notes ───────────────────────────────────────────────────────────────
+// ─── Data Notes Panel ─────────────────────────────────────────────────────────
 
-function DataNotesSection({ notes }) {
+function NotesPanel({ notes }) {
   const items = [
     ...(notes.fetch_failed || []).map(s => ({ type: "failed",   text: s })),
     ...(notes.estimates    || []).map(s => ({ type: "estimate", text: s })),
     ...(notes.missing      || []).map(s => ({ type: "missing",  text: s })),
   ];
-  if (items.length === 0) return null;
+  if (items.length === 0) return <p style={{ color: "var(--text-soft)" }}>No data quality issues.</p>;
   return (
-    <Card icon="⚠️" title="Data Quality Notes" color="#ef4444" bg="#fef2f2" border="#fecaca">
-      <ul className="notes-list">
-        {items.map((n, i) => (
-          <li key={i} className={`note-item note-item--${n.type}`}>{n.text}</li>
-        ))}
-      </ul>
-    </Card>
+    <div className="notes-grid">
+      {items.map((n, i) => (
+        <div key={i} className={`note-item note-item--${n.type}`}>{n.text}</div>
+      ))}
+    </div>
+  );
+}
+
+// ─── PDF Export Button ────────────────────────────────────────────────────────
+
+function PdfIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+      <polyline points="14 2 14 8 20 8"/>
+      <line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/>
+    </svg>
   );
 }
 
 // ─── Main Export ──────────────────────────────────────────────────────────────
 
 export default function TripResult({ data }) {
+  const [activeTab, setActiveTab] = useState("transport");
+  const [exporting, setExporting] = useState(false);
+
+  const handleExportPDF = useCallback(async () => {
+    setExporting(true);
+    await new Promise(r => setTimeout(r, 80));
+    window.print();
+    setExporting(false);
+  }, []);
+
   if (!data) return null;
+
   const { trip, transport, accommodation, budget, itinerary, itinerary_note, getting_around, data_notes } = data;
+
+  const notesCount = data_notes
+    ? (data_notes.fetch_failed?.length || 0) + (data_notes.missing?.length || 0)
+    : 0;
+
+  const TABS = [
+    { id: "transport",  icon: transport?.emoji || "✈️", label: "Transport" },
+    { id: "stay",       icon: "🏨",  label: "Stay" },
+    { id: "budget",     icon: "💰",  label: "Budget" },
+    { id: "itinerary",  icon: "📅",  label: "Itinerary" },
+    { id: "around",     icon: "🚇",  label: "Getting Around" },
+    { id: "notes",      icon: "⚠️",  label: "Notes", badge: notesCount },
+  ];
+
   return (
     <div className="trip-result">
       {trip && <TripHeader trip={trip} />}
-      <TransportSection transport={transport} trip={trip} />
-      <AccommodationSection items={accommodation} />
-      <BudgetSection budget={budget} trip={trip} />
-      <ItinerarySection days={itinerary} note={itinerary_note} />
-      <GettingAroundSection items={getting_around} />
-      {data_notes && <DataNotesSection notes={data_notes} />}
+      <TabBar tabs={TABS} active={activeTab} onSelect={setActiveTab} />
+      <div className="tab-panel">
+        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 16 }}>
+          <button className="btn-export-pdf" onClick={handleExportPDF} disabled={exporting}>
+            <PdfIcon />
+            {exporting ? "Preparing…" : "Export PDF"}
+          </button>
+        </div>
+        {activeTab === "transport"  && <TransportPanel transport={transport} trip={trip} />}
+        {activeTab === "stay"       && <StayPanel items={accommodation} />}
+        {activeTab === "budget"     && <BudgetPanel budget={budget} trip={trip} />}
+        {activeTab === "itinerary"  && <ItineraryPanel days={itinerary} note={itinerary_note} />}
+        {activeTab === "around"     && <AroundPanel items={getting_around} />}
+        {activeTab === "notes"      && data_notes && <NotesPanel notes={data_notes} />}
+      </div>
+
+      {/* ── Full report rendered only when printing ── */}
+      <div className="print-report">
+        <div className="print-section">
+          <div className="print-section-title">Transport</div>
+          <TransportPanel transport={transport} trip={trip} />
+        </div>
+        <div className="print-section">
+          <div className="print-section-title">Accommodation</div>
+          <StayPanel items={accommodation} />
+        </div>
+        <div className="print-section">
+          <div className="print-section-title">Budget</div>
+          <BudgetPanel budget={budget} trip={trip} />
+        </div>
+        <div className="print-section">
+          <div className="print-section-title">Itinerary</div>
+          <ItineraryPanel days={itinerary} note={itinerary_note} />
+        </div>
+        {getting_around?.length > 0 && (
+          <div className="print-section">
+            <div className="print-section-title">Getting Around</div>
+            <AroundPanel items={getting_around} />
+          </div>
+        )}
+        {data_notes && notesCount > 0 && (
+          <div className="print-section">
+            <div className="print-section-title">Data Notes</div>
+            <NotesPanel notes={data_notes} />
+          </div>
+        )}
+      </div>
     </div>
   );
 }
