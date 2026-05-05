@@ -1,0 +1,28 @@
+# Environment
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# uv
+.python-version
+
+# Node
+node_modules/
+frontend/dist/
+
+# DB
+*.db
+*.db-shm
+*.db-wal
+
+# CDK
+infra/cdk.out/
+
+# macOS
+.DS_Store
