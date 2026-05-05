@@ -40,13 +40,19 @@ ROLE_TOOL_SERVERS: dict[str, list[str]] = {
 
 def build_mcp_server_configs() -> dict[str, StdioServerParameters]:
     playwright_config = str(_REPO_ROOT / "playwright-mcp.config.json")
+    base_env = {
+        **os.environ,
+        "PLAYWRIGHT_BROWSERS_PATH": os.path.expanduser("~/.cache/ms-playwright"),
+    }
     return {
         "financial_quant": StdioServerParameters(
             command="uvx",
             args=["calculator-mcp-server"],
+            env=base_env,
         ),
         "browser": StdioServerParameters(
             command="npx",
             args=["@playwright/mcp@latest", "--config", playwright_config, "--isolated"],
+            env=base_env,
         ),
     }
