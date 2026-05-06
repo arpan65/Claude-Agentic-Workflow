@@ -163,7 +163,10 @@ export default function App() {
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || "Unable to reach backend");
+        const detail = Array.isArray(data.detail)
+          ? data.detail.map((e) => e.msg || JSON.stringify(e)).join("; ")
+          : data.detail || `Server error (${res.status})`;
+        throw new Error(detail);
       }
 
       const reader = res.body.getReader();
